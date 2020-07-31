@@ -1,0 +1,228 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Reflection;
+using Shared.Models.Filter;
+
+/*
+   <================================================================================================================================>
+   Using Filters after .Select (for example to apply Filters to GridModel):
+
+   Expression<Func<WorkItemGridModel, string>> expression = (WorkItemGridModel w) => w.WorkItemType;
+   var filter = new FilterModel(StringFilterType.EndsWith, new StringModel("Mail"));
+   query = query.ApplyFilter(new KeyValuePair<Expression<Func<WorkItemGridModel, string>>, FilterModel>(expression, filter));
+   <================================================================================================================================>
+
+   <================================================================================================================================>
+   Using Filter on a regular IQueryable<TEntity> (it doesn't matter which one)
+   The Property can be Top-Level (Example1), or Nested (Example2)
+
+   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+   Example 1 (Top-Level-Property):
+
+   Expression<Func<WorkItemEntity, DateTime>> expr = (WorkItemEntity w) => w.CreateUser.CreateDate;
+   Filter filter = new FilterModel(DateTimeFilterType.LessThan, new DateModel(DateTime.Now.Date));
+   query = query.ApplyFilter(new KeyValuePair<Expression<Func<WorkItemEntity, DateTime>>, FilterModel>(expr, filter));
+   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+   <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+   Example 2 (Nested Property):
+
+   Expression<Func<WorkItemEntity, string>> expr = (WorkItemEntity w) => w.CreateUser.UserInfo.FirstName;
+   Filter filter = new FilterModel(StringFilterType.Equals, new StringModel("Admin"));
+   query = query.ApplyFilter(new KeyValuePair<Expression<Func<WorkItemEntity, string>>, FilterModel>(expr, filter));
+   >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+
+   <================================================================================================================================>
+ */
+
+namespace App.Extensions
+{
+    public static class FilterExtensions
+    {
+        /// <summary>
+        /// ExpressionVisitor called to get the correct Expression for EF Core
+        /// </summary>
+        class ParameterReplacer : ExpressionVisitor
+        {
+            public ParameterExpression source;
+            public Expression target;
+
+            /// <summary>
+            /// This Method Visits and Replaces the Parameter to support full EF Core Querying
+            /// </summary>
+            /// <param name="node"></param>
+            /// <returns></returns>
+            protected override Expression VisitParameter(ParameterExpression node)
+            {
+                return node == source ? target : base.VisitParameter(node);
+            }
+        }
+
+        /// <summary>
+        /// Support for prefetched items
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="query">System.Collections.Generic.IEnumerable that will be filtered</param>
+        /// <param name="parameters">Filters will be applied to the current IEnumerable. (Field<=>Filter Mapping)</param>
+        /// <returns></returns>
+        public static IEnumerable<T> ApplyFilters<T, TOut, TEnum>(this IEnumerable<T> query,
+                                                           KeyValuePair<Expression<Func<T, TOut>>, FilterModel<TEnum>> parameter)
+        {
+            return query.AsQueryable().ApplyFilters(parameter);
+        }
+
+        public static IQueryable<T> ApplyFilter<T, TOut, TEnum>(this IQueryable<T> query,
+                                                         KeyValuePair<Expression<Func<T, TOut>>, FilterModel<TEnum>> parameter)
+        {
+            return ApplyFilters(query, new Dictionary<Expression<Func<T, TOut>>, FilterModel<TEnum>> () { { parameter.Key, parameter.Value } });
+        }
+
+        public static IQueryable<T> ApplyFilters<T, TOut, TEnum>(this IQueryable<T> query,
+                                                          Dictionary<Expression<Func<T, TOut>>, FilterModel<TEnum>> parameters)
+        {
+            foreach (var filterPair in parameters)
+            {
+                var parameterExpression = Expression.Parameter(typeof(T), "w");
+
+                var propertyExpression = new ParameterReplacer
+                {
+                    source = filterPair.Key.Parameters[0],
+                    target = parameterExpression
+                }
+                .Visit(filterPair.Key.Body);
+
+                var body = GetBody(filterPair, propertyExpression);
+
+                if (body != null)
+                {
+                    query = query.Where(Expression.Lambda<Func<T, bool>>(body, parameterExpression));
+                }
+            }
+            return query;
+        }
+
+        private static Expression GetBody<T, TOut, TEnum>(KeyValuePair<Expression<Func<T, TOut>>, FilterModel<TEnum>> filterPair,
+                                                   Expression propertyExpression)
+        {
+            ConstantExpression comparerExpression;
+
+            switch (filterPair.Value.FilterType)
+            {
+                case NumberFilterType filterType:
+                    if (filterType == NumberFilterType.Between)
+                    {
+                        var numberBetweenModel = filterPair.Value.Value as ValueModel;
+                        var comparerExpressionMin = Expression.Constant(Convert.ToDecimal(numberBetweenModel.Value));
+                        var comparerExpressionMax = Expression.Constant(Convert.ToDecimal(numberBetweenModel.Value2));
+
+                        var bodyMin = Expression.GreaterThanOrEqual(propertyExpression, comparerExpressionMin);
+                        var bodyMax = Expression.LessThanOrEqual(propertyExpression, comparerExpressionMax);
+
+                        return Expression.AndAlso(bodyMin, bodyMax);
+
+                    }
+                    else
+                    {
+                        var numberModel = filterPair.Value.Value as ValueModel;
+                        comparerExpression = Expression.Constant(numberModel.Value);
+                        switch (filterType)
+                        {
+                            case NumberFilterType.GreaterThan:
+                                return Expression.GreaterThan(propertyExpression, comparerExpression);
+                            case NumberFilterType.GreaterThanOrEqual:
+                                return Expression.GreaterThanOrEqual(propertyExpression, comparerExpression);
+                            case NumberFilterType.LessThan:
+                                return Expression.LessThan(propertyExpression, comparerExpression);
+                            case NumberFilterType.LessThanOrEqual:
+                                return Expression.LessThanOrEqual(propertyExpression, comparerExpression);
+                            default:
+                                return null;
+                        }
+                    }
+                case DateTimeFilterType filterType:
+                    if (filterType == DateTimeFilterType.Between)
+                    {
+                        var dateBetweenModel = filterPair.Value.Value as ValueModel;
+                        var comparerExpressionMin = Expression.Constant(Convert.ToDateTime(dateBetweenModel.Value).Date);
+                        var comparerExpressionMax = Expression.Constant(Convert.ToDateTime(dateBetweenModel.Value2).Date.AddDays(1).AddTicks(-1));
+
+                        var bodyMin = Expression.GreaterThanOrEqual(propertyExpression, comparerExpressionMin);
+                        var bodyMax = Expression.LessThanOrEqual(propertyExpression, comparerExpressionMax);
+
+                        return Expression.AndAlso(bodyMin, bodyMax);
+
+                    }
+                    else
+                    {
+                        var dateModel = filterPair.Value.Value as ValueModel;
+                        comparerExpression = Expression.Constant(Convert.ToDateTime(dateModel.Value).Date);
+                        switch (filterType)
+                        {
+                            case DateTimeFilterType.GreaterThan:
+                                return Expression.GreaterThan(propertyExpression, comparerExpression);
+                            case DateTimeFilterType.GreaterThanOrEqual:
+                                propertyExpression = ToDate(propertyExpression);
+                                return Expression.GreaterThanOrEqual(propertyExpression, comparerExpression);
+                            case DateTimeFilterType.LessThan:
+                                return Expression.LessThan(propertyExpression, comparerExpression);
+                            case DateTimeFilterType.LessThanOrEqual:
+                                propertyExpression = ToDate(propertyExpression);
+                                comparerExpression = Expression.Constant(Convert.ToDateTime(dateModel.Value).Date.AddDays(1).AddTicks(-1));
+                                return Expression.LessThanOrEqual(propertyExpression, comparerExpression);
+                            case DateTimeFilterType.Equals:
+                                propertyExpression = ToDate(propertyExpression);
+                                return Expression.Equal(propertyExpression, comparerExpression);
+                            default:
+                                return null;
+                        }
+                    }
+                case StringFilterType filterType:
+                    var stringModel = filterPair.Value.Value as ValueModel;
+                    comparerExpression = Expression.Constant(stringModel.Value as string);
+                    string methodName = Enum.GetName(typeof(StringFilterType), filterType);
+                    MethodInfo methodInfo = typeof(string).GetMethod(methodName, new Type[] { typeof(string) });
+                    return Expression.Call(propertyExpression, methodInfo, comparerExpression);
+                #region Case-Sensitive Caller
+                // Use this in Case Database is Case-Sensitive
+                /* 
+                var stringModel = filterPair.Value.Value as StringModel;
+                comparerExpression = Expression.Constant((stringModel.Value as string).ToLower());
+                string methodName = Enum.GetName(typeof(StringFilterType), filterType);
+                MethodInfo methodInfo = typeof(string).GetMethod(methodName, new Type[] { typeof(string) });
+                return Expression.Call(ToLowerMember(propertyExpression), methodInfo, comparerExpression);
+                */
+                #endregion
+                case GuidFilterType _:
+                    var guidModel = filterPair.Value.Value as ValueModel;
+                    comparerExpression = Expression.Constant(Guid.Parse(guidModel.Value as string));
+                    return Expression.Equal(propertyExpression, comparerExpression);
+                case BoolFilterType _:
+                    var boolModel = filterPair.Value.Value as ValueModel;
+                    comparerExpression = Expression.Constant(bool.Parse(boolModel.Value as string));
+                    return Expression.Equal(propertyExpression, comparerExpression);
+                default:
+                    return null;
+            }
+        }
+
+
+        public static MemberExpression ToDate(Expression node)
+        {
+            return Expression.Property(node, "Date");
+        }
+
+        /// <summary>
+        /// This is only necessary if the Database is Case-Sensitive, usually it's Case-Insensitive (HUP is as of now)
+        /// </summary>
+        /// <param name="node"></param>
+        /// <returns></returns>
+        public static Expression ToLowerMember(Expression node)
+        {
+            var methodInfo = typeof(string).GetMethod("ToLower", new Type[] { });
+            var expression = Expression.Call(node, methodInfo);
+            return expression;
+        }
+    }
+}
