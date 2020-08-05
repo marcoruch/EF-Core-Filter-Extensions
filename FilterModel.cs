@@ -10,7 +10,7 @@ namespace Shared.Models.Filter
         /// <summary>
         /// Model used to pass Values, when the Filter is not a "Between" Filter, the first Value will be used.
         /// </summary>
-        public ValueModel Value { get; set; }
+        public object[] Value { get; set; }
         public string Name { get; set; }
 
         public FilterModel(TFilterType filterType, ValueModel value)
