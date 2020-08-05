@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
 using System.Reflection;
@@ -17,7 +18,7 @@ namespace App.Extensions
         /// <param name="query"></param>
         /// <param name="filter"></param>
         /// <returns></returns>
-        public static IQueryable<T> ApplyFilter<T, TFilterType>(this IQueryable<T> query, FilterModel<TFilterType> filter)
+        public static IQueryable<T> Filter<T, TFilterType>(this IQueryable<T> query, FilterModel<TFilterType> filter)
         {
             (Expression Body, ParameterExpression Parameter) value;
 
@@ -37,9 +38,9 @@ namespace App.Extensions
             {
                 value = CreateBoolFilter<T, TFilterType>(filter);
             }
-            else if (filter.FilterType is GuidFilterType)
+            else if (filter.FilterType is GuidFilterType guidFilterType)
             {
-                value = CreateGuidFilter<T, TFilterType>(filter);
+                value = CreateGuidFilter<T, TFilterType>(filter, guidFilterType);
             }
             else
             {
@@ -50,24 +51,24 @@ namespace App.Extensions
 
         }
 
-        public static IQueryable<T> ApplyFilters<T>(this IQueryable<T> query, FilterPagingParameters parameters)
+        public static IQueryable<T> Filter<T>(this IQueryable<T> query, FilterPagingParameters parameters)
         {
-            query = query.ApplyFilters(parameters.NumberFilters);
-            query = query.ApplyFilters(parameters.DateTimeFilters);
-            query = query.ApplyFilters(parameters.StringFilters);
-            query = query.ApplyFilters(parameters.BoolFilters);
-            query = query.ApplyFilters(parameters.GuidFilters);
+            query = query.Filter(parameters.NumberFilters);
+            query = query.Filter(parameters.DateTimeFilters);
+            query = query.Filter(parameters.StringFilters);
+            query = query.Filter(parameters.BoolFilters);
+            query = query.Filter(parameters.GuidFilters);
 
             return query;
         }
 
-        private static IQueryable<T> ApplyFilters<T, TFilterType>(this IQueryable<T> query, FilterModel<TFilterType>[] filters)
+        private static IQueryable<T> Filter<T, TFilterType>(this IQueryable<T> query, FilterModel<TFilterType>[] filters)
         {
             if (filters != null && filters.Any())
             {
                 foreach (var filter in filters)
                 {
-                    query = query.ApplyFilter(filter);
+                    query = query.Filter(filter);
                 }
             }
 
@@ -78,12 +79,12 @@ namespace App.Extensions
         {
             var propertyExpression = GetExpression<T, decimal>(filter.Name);
             var parameter = propertyExpression.Parameters[0];
-            var value1 = Expression.Constant(Convert.ToDecimal(filter.Value.Value));
+            var value1 = Expression.Constant(Convert.ToDecimal(filter.Values[0]));
             Expression body;
 
             if (filterType == NumberFilterType.Between)
             {
-                var value2 = Expression.Constant(Convert.ToDecimal(filter.Value.Value2));
+                var value2 = Expression.Constant(Convert.ToDecimal(filter.Values[1]));
                 var bodyMin = Expression.GreaterThanOrEqual(propertyExpression.Body, value1);
                 var bodyMax = Expression.LessThanOrEqual(propertyExpression.Body, value2);
 
@@ -122,12 +123,12 @@ namespace App.Extensions
         {
             var propertyExpression = GetExpression<T, DateTime>(filter.Name);
             var parameter = propertyExpression.Parameters[0];
-            var value1 = Expression.Constant(Convert.ToDateTime(filter.Value.Value)); // TODO: ToDate Required?
+            var value1 = Expression.Constant(Convert.ToDateTime(filter.Values[0])); // TODO: ToDate Required?
             Expression body;
 
             if (filterType == DateTimeFilterType.Between)
             {
-                var value2 = Expression.Constant(Convert.ToDateTime(filter.Value.Value2));
+                var value2 = Expression.Constant(Convert.ToDateTime(filter.Values[1]));
                 var bodyMin = Expression.GreaterThanOrEqual(propertyExpression.Body, value1);
                 var bodyMax = Expression.LessThanOrEqual(propertyExpression.Body, value2);
 
@@ -175,18 +176,35 @@ namespace App.Extensions
 
             var propertyExpression = GetExpression<T, string>(filter.Name);
             var parameter = propertyExpression.Parameters[0];
-            var value = Expression.Constant(filter.Value.Value as string);
+            var value = Expression.Constant(filter.Values[0] as string);
             Expression body = Expression.Call(propertyExpression.Body, methodInfo, value);
 
             return (body, parameter);
         }
 
-        private static (Expression Body, ParameterExpression Parameter) CreateGuidFilter<T, TFilterType>(FilterModel<TFilterType> filter)
+        private static (Expression Body, ParameterExpression Parameter) CreateGuidFilter<T, TFilterType>(FilterModel<TFilterType> filter, GuidFilterType filterType)
         {
+            Expression body;
             var propertyExpression = GetExpression<T, Guid>(filter.Name);
             var parameter = propertyExpression.Parameters[0];
-            var value = Expression.Constant(Guid.Parse(filter.Value.Value as string));
-            Expression body = Expression.Equal(propertyExpression.Body, value);
+
+
+            if (filterType == GuidFilterType.Equals)
+            {
+                var value = Expression.Constant(Guid.Parse(filter.Values[0] as string));
+                body = Expression.Equal(propertyExpression.Body, value);
+            }
+            else if (filterType == GuidFilterType.Contains)
+            {
+                var arrExpr = Expression.Constant(filter.Values.Select(obj => Guid.Parse(obj as string)).ToArray());
+                MethodInfo methodInfo = typeof(ICollection<Guid>).GetMethod("Contains");
+                body = Expression.Call(arrExpr, methodInfo, propertyExpression.Body);
+            }
+            else
+            {
+                throw new NotImplementedException(filterType.ToString());
+            }
+
             return (body, parameter);
         }
 
@@ -194,7 +212,7 @@ namespace App.Extensions
         {
             var propertyExpression = GetExpression<T, bool>(filter.Name);
             var parameter = propertyExpression.Parameters[0];
-            var value = Expression.Constant((bool)filter.Value.Value);
+            var value = Expression.Constant((bool)filter.Values[0]);
             Expression body = Expression.Equal(propertyExpression.Body, value);
 
             return (body, parameter);
