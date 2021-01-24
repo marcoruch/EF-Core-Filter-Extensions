@@ -5,7 +5,7 @@ Filters IQueryable&lt;T> by  DateTime, Number, String, Bool and Guid.
 
 FilterExtensions.cs Calling Method:
 ```
-            .ApplyFilters(Parameter) where Parameter is FilterPagingParameters
+            .ApplyFilters(Parameter)
 ```
 
 FilterExtensions2. Calling Method:
