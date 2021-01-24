@@ -5,10 +5,10 @@ Filters IQueryable&lt;T> by  DateTime, Number, String, Bool and Guid.
 
 FilterExtensions.cs Calling Method:
 ```
-            .ApplyFilters(Parameter)
+.ApplyFilters(Parameter)
 ```
 
-FilterExtensions2. Calling Method:
+Example of adding a Filter:
 
 ```
 if (Parameter.PriorityFilter != null)
